@@ -1,62 +1,65 @@
 import os
 import httpx
 from bs4 import BeautifulSoup
+from google import genai
 from dotenv import load_dotenv
 
-# --- SETUP ---
+# Setup
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# --- THE SAVE FUNCTION ---
-def save_to_cloud(url, title, content):
-    endpoint = f"{SUPABASE_URL}/rest/v1/pages"
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+def get_embedding(text):
+    # convert text into 768 numbers
+    result = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+    )
+    return result.embeddings[0].values
+
+def crawl_and_embed(url):
+    print(f"CRAWLING: {url}")
+
+    # Get the HTML
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = httpx.get(url,headers=headers, follow_redirects=True)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # Clean the Text
+    title = soup.title.string
+    text_content = soup.get_text(separator=' ',strip=True)[:8000] # Limit of 8000 chars
+    print(f"FOUND: {title}")
+
+    # GET THE NUMBERS
+    print("GENERATING VECTORS...")
+    vector = get_embedding(text_content)
+    print(f"VECTOR LENGTH: {len(vector)}")
+    # Save to the NEW vault table
+    data = {
+        "filename": title,
+        "content": text_content,
+        "embedding": vector
+    }
+    
+    print("SAVING TO VAULT...")
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "prefer": "return=representation"
+        "Prefer": "return=minimal"
     }
-    payload = {"url": url, "title": title, "content": content}
 
-    try:
-        response = httpx.post(endpoint, headers=headers, json=payload)
-        if response.status_code == 201:
-            print(f"SAVED: {title}")
-        elif response.status_code == 409:
-            print(f"EXISTS: {title}")
-        else:
-            print(f"DB ERROR: {response.text}")
-    except Exception as e:
-        print(f"CONNECTION ERROR: {e}")
+    db_response = httpx.post(f"{SUPABASE_URL}/rest/v1/vault", json=data, headers=headers)
 
-#--- THE NEW CRAWLER FUNCTION ---
-def crawl_website(url):
-    print(f"CRAWLING: {url}...")
+    if db_response.status_code == 201:
+        print("SUCCESS: Data + Vectorts Saved!")
+    else: 
+        print(f"ERROR: {db_response.text}")
 
-    # Fetch the HTML 
-    headers = {f"User-Agent": "VortexBot/1.0"} # Pretend to be a real browser
-    try:
-        response = httpx.get(url, headers=headers)
-
-        # Parse the HTML
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Extract Title
-        title = soup.title.string if soup.title else "No Title"
-
-        #Extract Text ( Clean up spaces)
-        text_content = soup.get_text(separator=" ", strip=True)[:5000] # Limit to 5000 chars
-
-        print (f"FOUND:  {title}")
-
-        # Save to Cloud
-        save_to_cloud(url, title, text_content)
-
-    except Exception as e:
-        print(f"FAILED TO CRAWL: {e}")
-
-# --- EXCUTE ---
 if __name__ == "__main__":
-    # Test with a real site (Paul Graham's Essay)
-    crawl_website("https://paulgraham.com/avg.html")
+    target = input("Enter URL to Embed: ")
+    crawl_and_embed(target)
+    

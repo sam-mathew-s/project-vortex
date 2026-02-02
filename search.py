@@ -1,62 +1,67 @@
-import os
-import httpx
-from dotenv import load_dotenv
+import os 
+import httpx 
+from google import genai 
+from dotenv import load_dotenv 
+from brain import ask_vortex_brain 
 
-# Load Secrets
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-def search_vortex(query):
-    print(f"SEARCHING VORTEX FOR: '{query}'...")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-    # The Cloud Query
-    # 'ilike' (Case-insensitive matching) and this says find rows where ' content is contains query 
-    # The % symbols mean "anything before" and "anything after "
+def get_query_embedding(text):
+    result = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+    )
+    return result.embeddings[0].values
 
-    search_term = f"%{query}%"
+def search_vortex_smart(query):
+    print(f"\n ANALYZING CONCEPT: '{query}'...")
 
-    endpoint = f"{SUPABASE_URL}/rest/v1/pages"
+    #convert question to numbers
+    query_vector = get_query_embedding(query)
 
-    params = {
-        "content": f"ilike.{search_term}",
-        "select": "*" # Give me all colums  
-    }
-
+    # RPC call to supabse 
+    rpc_url = f"{SUPABASE_URL}/rest/v1/rpc/match_documents"
     headers = {
         "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "query_embedding": query_vector,
+        "match_threshold": 0.0,
+        "match_count": 1
     }
 
-    try:
-        response = httpx.get(endpoint, headers=headers, params=params)
-        results = response.json()
+    response = httpx.post(rpc_url, json=payload, headers=headers)
+    results = response.json()
 
-        if len(results) == 0:
-            print("No results found in the archives.")
-        else:
-            print(f"FOUND {len(results)} MATCHES:\n")
-            for page in results:
-                print(f"URL: {page['url']}")
-                print(f"TITLE: {page['title']}")
-                # print just the first 100 characters of text to keep it clean
-                preview = page['content'][:150].replace("\n", " ")
-                print(f"TEXT: {preview}...")
-                print("-" * 40)
-
-    except Exception as e:
-        print(f"ERROR: {e}")
-
-# --- THE INFINITE LOOP ---
-if __name__ == "__main__":
-    print("--- VORTEX SEARCH ENGINE ONLINE ---")
-    print("(Type 'exit to quit)")
-
-    while True:
-        user_input = input("\n Enter Search Term: ")
-        break
+    if not results:
+        print("No matching concepts found.")
+        return
     
-    search_vortex(user_input)
+    # SUCESS
+    best_match = results[0]
+    similarity = best_match['similarity'] *100
+    print(f"FOUND MATCH ({similarity:.1f}% Confidence)")
+    print(f"CONTENT SNIPET: {best_match['content'][:200]}...")
 
-        
-        
+    # Activate Brain 
+    print("\n VORTEX AI IS READY.")
+    ai_prompt = input("Ask the AI about this result: ")
+    if ai_prompt:
+        answer = ask_vortex_brain(ai_prompt, best_match['content'])
+        print("\n" +"="*40)
+        print("VORTEX AI SAYS:")
+        print(answer)
+        print("="*40 + "\n")
+
+if __name__ == "__main__":
+    while True:
+        q = input("\n Ask a Question(or 'exit'): ")
+        if q == 'exit': break 
+        search_vortex_smart(q)
